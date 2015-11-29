@@ -1,0 +1,190 @@
+#!/usr/bin/python3
+
+import sys,os
+import re
+
+## official repo's 
+
+#http://ports.ubuntu.com/ubuntu-ports/
+#http://old-releases.ubuntu.com/ubuntu/
+#http://security.ubuntu.com/ubuntu/
+#http://archive.ubuntu.com/ubuntu/
+
+repo_official_uri_re = re.compile(r"\A(http|ftp)://(([a-zA-Z]*.)?archive|security|old-releases|ports).ubuntu.com/ubuntu(-ports)?[/]?\Z")
+
+## load other mirrors
+
+mirrors=[]
+
+mir_re = re.compile(r"\A(http|ftp)://")
+
+with open("/usr/share/python-apt/templates/Ubuntu.mirrors","r") as f:
+    for l in f:
+        if mir_re.match(l):
+            mirrors.append(l.strip())
+f.close()
+#print(mirrors)
+
+## system release
+
+with open("/etc/lsb-release","r") as f:
+    for l in f:
+        k,v=l.split("=")
+        if k=="DISTRIB_CODENAME":
+            release = v.strip()
+            break
+
+#print(release)
+f.close()
+
+## load sources.list
+
+##TODO: missing support deb line options like [ arch=whatever ] 
+emp_re  = re.compile(r"\A\s*\Z")
+repo_re = re.compile(r"\A#* *deb(-src)? *(http://|ftp://|file://|cdrom:)")
+com_re  = re.compile(r"\A#")
+repo_details_re = re.compile(r"\A(?P<active>#*) *(?P<type>deb(-src)?) *(?P<uri>(http://|ftp://|file://|cdrom:\[[a-zA-Z0-9 \-_().]*\])?\S*) (?P<dist>[a-zA-Z\-_]*) (?P<comp>[a-zA-Z ]*\Z)")
+        
+
+##example
+sources={
+  "http://archive.ubuntu.com/ubuntu/":{
+    "active":True,
+    "deb":{
+      "wily":["universe","multiverse","restricted","main"],
+      "wily-security":["main","restricted","universe","multiverse"]
+      },
+    "deb-src":{
+      "wily":["universe","multiverse","restricted","main"]
+      },
+    "mirror":True    
+    }
+  }
+
+sources={}
+
+uri=""
+
+##for testing
+if len(sys.argv)>=4 and os.path.isfile(sys.argv[3]):
+    ifile = sys.argv[3]
+else:
+    ifile = "/etc/apt/sources.list"
+
+with open(ifile, "r") as f:
+    for l in f:
+        l=l.strip()
+
+        r = emp_re.match(l)
+        if r:
+            continue
+        else:
+            #print("raw:",l)
+
+            r = repo_re.match(l)
+            if r:
+                #print("repository:",l)
+                r = repo_details_re.match(l)
+                #print(r.groupdict())
+                uri=r.group("uri")
+                if uri[-1]!="/":
+                    uri += "/"
+                if (uri not in sources):
+                    sources[uri] = {"active":False,"deb":{},"deb-src":{},"mirror":False}
+                    m = repo_official_uri_re.match(uri)
+                    if m or uri in mirrors:
+                        sources[uri]["mirror"] = True
+                    if r.group("active")=="":
+                            sources[uri]["active"]=True
+                    sources[uri][r.group("type")][r.group("dist")]=r.group("comp").split()
+                else:
+                    if r.group("active")=="" and sources[uri]["active"]==False:
+                        sources[uri]["active"]=True
+                        sources[uri]["deb"]={}
+                        sources[uri]["deb-src"]={}
+                        sources[uri][r.group("type")][r.group("dist")]=r.group("comp").split()
+                    if (r.group("active")=="")==sources[uri]["active"]:
+                        if r.group("dist") not in sources[uri][r.group("type")]:
+                            sources[uri][r.group("type")][r.group("dist")]=r.group("comp").split()
+                        else:
+                            for c in r.group("comp").split():
+                                if c not in sources[uri][r.group("type")][r.group("dist")]:
+                                    sources[uri][r.group("type")][r.group("dist")].append(c)
+            else:
+                r = com_re.match(l)
+                if r:
+                    #print("comment",l)
+                    continue
+                else:
+                    print("unknown",l)
+    #print(sources)
+
+f.close()
+
+## process argumments
+
+#fallback for default component to be copied from
+comp=[release+"-security",release+"-update",release+"-proposed"]
+found_other_comp=False 
+
+if sys.argv[2]=="default" and sys.argv[1]=="enable":
+    for u in sorted(sources.keys()):
+        if sources[u]["mirror"]:
+            if sources[u]["active"]:
+                for t in ["deb","deb-src"]:
+                    if release not in sources[u][t]:
+                        for d in range(len(comp)):
+                            if comp[d] in sources[u][t]:
+                                other_comp_found=True
+                                for i in range(d):
+                                    sources[u][t][comp[i]]=sources[u][t][comp[d]]
+                                sources[u][t][release]=sources[u][t][comp[d]]
+                                
+                        ###don't activate any thing if commented like an empty file.
+                        #if not found_other_comp and t=="deb":
+                        #   sources[u][t][release]=["main"]
+            #else:
+            #   sources[u]["active"]=True
+            #   sources[u]["deb"]={release:["main"]}
+            #   sources[u]["deb-src"]={}
+                
+    ## carry on enable security
+    sys.argv[2] = "security"
+
+if sys.argv[2]=="security" or sys.argv[2]=="updates" or sys.argv[2]=="proposed" or sys.argv[2]=="backports":
+    for u in sorted(sources.keys()):
+        if sources[u]["mirror"] and sources[u]["active"]:
+            if sys.argv[1]=="disable":
+                if len(sources[u]["deb"])+len(sources[u]["deb-src"])>(release+"-"+sys.argv[2] in sources[u]["deb"])+(release+"-"+sys.argv[2] in sources[u]["deb-src"]):
+                    if release+"-"+sys.argv[2] in sources[u]["deb"]:
+                        del sources[u]["deb"][release+"-"+sys.argv[2]]
+                    if release+"-"+sys.argv[2] in sources[u]["deb-src"]:
+                        del sources[u]["deb-src"][release+"-"+sys.argv[2]]
+                else:
+                    sources[u]["active"] = False
+            elif sys.argv[1]=="enable":
+                for t in ["deb","deb-src"]:
+                    if release in sources[u][t]:
+                        if release+"-"+sys.argv[2] not in sources[u][t]:
+                            sources[u][t][release+"-"+sys.argv[2]]=sources[u][t][release]
+                        else:
+                            for c in sources[u][t][release]:
+                                if c not in sources[u][t][release+"-"+sys.argv[2]]:
+                                    sources[u][t][release+"-"+sys.argv[2]].append(c)
+
+## generate the new list
+data_out=""
+for u in sorted(sources.keys()):
+    #print(u)
+    for t in ["deb","deb-src"]:
+        for d in sorted(sources[u][t].keys()):
+            data_out += (not sources[u]["active"])*"#"+" ".join([t,u,d,""])+" ".join(sorted(sources[u][t][d]))+"\n"
+
+if len(sys.argv)>=4 or not os.access("/etc/apt/sources.list", os.W_OK):
+    print(data_out)
+else:
+    with open("/etc/apt/sources.list","w") as f:
+        f.write(data_out)
+    f.close()
+        
+sys.exit(0)
