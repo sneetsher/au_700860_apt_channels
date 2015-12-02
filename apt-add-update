@@ -3,7 +3,50 @@
 import sys,os
 import re
 
-## official repo's 
+## check syntax
+
+def usage():
+    print("""
+Usage:
+
+  Simulation: prints to stdout, no file change
+  
+    apt-add-update COMMAND CHANNEL [FILE]
+
+  Effective: updates /etc/apt/sources.list
+  
+    sudo apt-add-update COMMAND CHANNEL
+
+Commands:
+  disable
+  enable
+
+Channels:
+  default
+  ""
+  updates
+  security
+  proposed
+  backports
+    """)
+
+commands=["enable","disable"]
+channels=["","security","updates","proposed","backports"]
+
+if len(sys.argv)<3:
+    #TODO: print error not enough args
+    usage()
+    sys.exit(1)
+elif sys.argv[1] not in commands:
+    #TODO: print error unkown cmd
+    usage()
+    sys.exit(1)
+elif sys.argv[2] not in channels and sys.argv[2]!="default":
+    #TODO: print error unkown ch
+    usage()
+    sys.exit(1)
+    
+## official repo's, needed regex
 
 #http://ports.ubuntu.com/ubuntu-ports/
 #http://old-releases.ubuntu.com/ubuntu/
@@ -12,30 +55,42 @@ import re
 
 repo_official_uri_re = re.compile(r"\A(http|ftp)://(([a-zA-Z]*.)?archive|security|old-releases|ports).ubuntu.com/ubuntu(-ports)?[/]?\Z")
 
-## load other mirrors
+## load other cummunity mirrors, collected from python-apt 
 
 mirrors=[]
-
 mir_re = re.compile(r"\A(http|ftp)://")
 
-with open("/usr/share/python-apt/templates/Ubuntu.mirrors","r") as f:
-    for l in f:
-        if mir_re.match(l):
-            mirrors.append(l.strip())
-f.close()
+ifile="/usr/share/python-apt/templates/Ubuntu.mirrors"
+
+if os.path.isfile(ifile):
+    with open(ifile,"r") as f:
+        for l in f:
+            if mir_re.match(l):
+                mirrors.append(l.strip())
+    f.close()
+else:
+    #TODO: print error, couldn't load mirrors list (please, install python-apt). all unkown mirrors will be treated as 3rd party repo.
+    pass
+
+
 #print(mirrors)
 
 ## system release
 
-with open("/etc/lsb-release","r") as f:
+ifile="/etc/lsb-release"
+
+if not os.path.isfile(ifile):
+    #TODO: print error
+    sys.exit(1)
+    
+with open(ifile,"r") as f:
     for l in f:
         k,v=l.split("=")
         if k=="DISTRIB_CODENAME":
             release = v.strip()
             break
-
-#print(release)
 f.close()
+#print(release)
 
 ## load sources.list
 
@@ -45,8 +100,7 @@ repo_re = re.compile(r"\A#* *deb(-src)? *(http://|ftp://|file://|cdrom:)")
 com_re  = re.compile(r"\A#")
 repo_details_re = re.compile(r"\A(?P<active>#*) *(?P<type>deb(-src)?) *(?P<uri>(http://|ftp://|file://|cdrom:\[[a-zA-Z0-9 \-_().]*\])?\S*) (?P<dist>[a-zA-Z\-_]*) (?P<comp>[a-zA-Z ]*\Z)")
         
-
-##example
+## structure example for debian source entry
 sources={
   "http://archive.ubuntu.com/ubuntu/":{
     "active":True,
@@ -63,13 +117,15 @@ sources={
 
 sources={}
 
-uri=""
-
-##for testing
-if len(sys.argv)>=4 and os.path.isfile(sys.argv[3]):
+## add alternative input for testing or process on the fly
+if len(sys.argv)>=4:
     ifile = sys.argv[3]
 else:
     ifile = "/etc/apt/sources.list"
+
+if not os.path.isfile(ifile):
+    #TODO: print error
+    sys.exit(1)
 
 with open(ifile, "r") as f:
     for l in f:
@@ -80,7 +136,6 @@ with open(ifile, "r") as f:
             continue
         else:
             #print("raw:",l)
-
             r = repo_re.match(l)
             if r:
                 #print("repository:",l)
@@ -118,14 +173,13 @@ with open(ifile, "r") as f:
                 else:
                     print("unknown",l)
     #print(sources)
-
 f.close()
 
 ## process argumments
 
 #fallback for default component to be copied from
-comp=[release+"-security",release+"-update",release+"-proposed"]
-found_other_comp=False 
+update_channels=[release+"-security",release+"-update",release+"-proposed"]
+found_other_dist=False 
 
 if sys.argv[2]=="default" and sys.argv[1]=="enable":
     for u in sorted(sources.keys()):
@@ -133,15 +187,15 @@ if sys.argv[2]=="default" and sys.argv[1]=="enable":
             if sources[u]["active"]:
                 for t in ["deb","deb-src"]:
                     if release not in sources[u][t]:
-                        for d in range(len(comp)):
-                            if comp[d] in sources[u][t]:
-                                other_comp_found=True
+                        for d in range(len(update_channels)):
+                            if update_channels[d] in sources[u][t]:
+                                found_other_dist=True
                                 for i in range(d):
-                                    sources[u][t][comp[i]]=sources[u][t][comp[d]]
-                                sources[u][t][release]=sources[u][t][comp[d]]
+                                    sources[u][t][update_channels[i]]=sources[u][t][update_channels[d]]
+                                sources[u][t][release]=sources[u][t][update_channels[d]]
                                 
                         ###don't activate any thing if commented like an empty file.
-                        #if not found_other_comp and t=="deb":
+                        #if not found_other_dist and t=="deb":
                         #   sources[u][t][release]=["main"]
             #else:
             #   sources[u]["active"]=True
@@ -151,26 +205,25 @@ if sys.argv[2]=="default" and sys.argv[1]=="enable":
     ## carry on enable security
     sys.argv[2] = "security"
 
-if sys.argv[2]=="security" or sys.argv[2]=="updates" or sys.argv[2]=="proposed" or sys.argv[2]=="backports":
-    for u in sorted(sources.keys()):
-        if sources[u]["mirror"] and sources[u]["active"]:
-            if sys.argv[1]=="disable":
-                if len(sources[u]["deb"])+len(sources[u]["deb-src"])>(release+"-"+sys.argv[2] in sources[u]["deb"])+(release+"-"+sys.argv[2] in sources[u]["deb-src"]):
-                    if release+"-"+sys.argv[2] in sources[u]["deb"]:
-                        del sources[u]["deb"][release+"-"+sys.argv[2]]
-                    if release+"-"+sys.argv[2] in sources[u]["deb-src"]:
-                        del sources[u]["deb-src"][release+"-"+sys.argv[2]]
-                else:
-                    sources[u]["active"] = False
-            elif sys.argv[1]=="enable":
-                for t in ["deb","deb-src"]:
-                    if release in sources[u][t]:
-                        if release+"-"+sys.argv[2] not in sources[u][t]:
-                            sources[u][t][release+"-"+sys.argv[2]]=sources[u][t][release]
-                        else:
-                            for c in sources[u][t][release]:
-                                if c not in sources[u][t][release+"-"+sys.argv[2]]:
-                                    sources[u][t][release+"-"+sys.argv[2]].append(c)
+for u in sorted(sources.keys()):
+    if sources[u]["mirror"] and sources[u]["active"]:
+        if sys.argv[1]=="disable":
+            if len(sources[u]["deb"])+len(sources[u]["deb-src"])>(release+"-"+sys.argv[2] in sources[u]["deb"])+(release+"-"+sys.argv[2] in sources[u]["deb-src"]):
+                if release+"-"+sys.argv[2] in sources[u]["deb"]:
+                    del sources[u]["deb"][release+"-"+sys.argv[2]]
+                if release+"-"+sys.argv[2] in sources[u]["deb-src"]:
+                    del sources[u]["deb-src"][release+"-"+sys.argv[2]]
+            else:
+                sources[u]["active"] = False
+        elif sys.argv[1]=="enable":
+            for t in ["deb","deb-src"]:
+                if release in sources[u][t]:
+                    if release+"-"+sys.argv[2] not in sources[u][t]:
+                        sources[u][t][release+"-"+sys.argv[2]]=sources[u][t][release]
+                    else:
+                        for c in sources[u][t][release]:
+                            if c not in sources[u][t][release+"-"+sys.argv[2]]:
+                                sources[u][t][release+"-"+sys.argv[2]].append(c)
 
 ## generate the new list
 data_out=""
@@ -179,6 +232,10 @@ for u in sorted(sources.keys()):
     for t in ["deb","deb-src"]:
         for d in sorted(sources[u][t].keys()):
             data_out += (not sources[u]["active"])*"#"+" ".join([t,u,d,""])+" ".join(sorted(sources[u][t][d]))+"\n"
+
+if len(sys.argv)<4 and not os.access("/etc/apt/sources.list", os.W_OK):
+    #TODO: print error but don't exit cont. print to sdtout
+    pass
 
 if len(sys.argv)>=4 or not os.access("/etc/apt/sources.list", os.W_OK):
     print(data_out)
